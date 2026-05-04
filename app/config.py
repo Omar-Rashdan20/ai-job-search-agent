@@ -60,6 +60,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 CACHE_DIR = os.getenv("CACHE_DIR", "./cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_TTL_HOURS = float(os.getenv("CACHE_TTL_HOURS", "12"))
 
 # Defaults
 DEFAULT_TOP_RESULTS = int(os.getenv("DEFAULT_TOP_RESULTS", "5"))

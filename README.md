@@ -1,95 +1,109 @@
-# AI Agent Job Search
+# AI Job Search Agent
 
-A CrewAI-powered job search app that generates targeted queries, finds valid job URLs automatically, keeps blocked job boards as search-only results, extracts official/ATS job details when possible, and displays ranked job cards in a Gradio interface.
+AI Job Search Agent is a CrewAI-powered application that helps job seekers find recent, relevant job postings. It generates targeted search queries, searches the web with Tavily, extracts structured job details from official company and ATS pages, and presents ranked results in a Gradio interface.
 
-## Features
+The project is designed to prioritize fresh postings, valid job URLs, and transparent source handling. Job boards that are difficult or inappropriate to scrape, such as LinkedIn, Bayt, Indeed, and Glassdoor, are kept as search-only results.
 
-- Generates focused job-search queries from a job title and country.
-- Searches automatically with Tavily (queries run in parallel).
-- Extracts structured job details with ScrapeGraph only for official company or ATS pages.
-- Falls back to Tavily search data when scraping is blocked or unavailable.
-- Keeps LinkedIn, Bayt, Indeed, and Glassdoor as search-only results.
-- Supports work mode filtering: Any, Remote, Hybrid, Onsite.
-- Thread-safe — multiple Gradio sessions don't interfere with each other.
+## Key Features
 
-## Source Rules
+- Generates targeted job-search queries from the user's role, location, skills, and preferred work mode.
+- Searches job sources with Tavily and filters results by country, role relevance, work mode, and posting date.
+- Extracts structured job data from official company career pages and supported ATS platforms.
+- Keeps blocked job boards as search-only results instead of scraping them.
+- Ranks jobs by freshness, relevance, source quality, location fit, and skill match.
+- Displays results in a Gradio web interface with source badges for scraped and search-only jobs.
+- Supports Gemini as the primary LLM provider with optional Ollama fallback.
+- Includes optional AgentOps monitoring for workflow visibility.
 
-| Source | Behavior |
-|---|---|
-| `linkedin.com` | Search-only |
-| `bayt.com` | Search-only |
-| `indeed.com` | Search-only |
-| `glassdoor.com` | Search-only |
-| Official company career pages | Scraped when they look like direct job pages |
-| ATS pages such as `greenhouse.io`, `lever.co`, `workable.com`, `ashbyhq.com`, `smartrecruiters.com` | Scraped |
-
-## Tech Stack
+## Technology Stack
 
 | Layer | Technology |
-|---|---|
-| Agent framework | CrewAI |
-| LLM | Gemini 2.5 Flash (Ollama fallback) |
+| --- | --- |
+| Agent orchestration | CrewAI |
+| LLM provider | Gemini, with optional Ollama fallback |
 | Search | Tavily |
 | Scraping | ScrapeGraph AI |
 | UI | Gradio |
 | Validation | Pydantic |
-| Monitoring (opt.) | AgentOps |
+| Monitoring | AgentOps, optional |
+
+## Source Handling
+
+| Source type | Behavior |
+| --- | --- |
+| LinkedIn, Bayt, Indeed, Glassdoor | Kept as search-only results |
+| Official company career pages | Scraped when they point to a direct job posting |
+| ATS platforms | Scraped when they point to a direct job posting |
+| Listing pages, search pages, blogs, or salary pages | Rejected |
+
+Supported ATS examples include `greenhouse.io`, `lever.co`, `workable.com`, `ashbyhq.com`, and `smartrecruiters.com`.
 
 ## Project Structure
 
 ```text
 ai-job-search-agent/
-├── app/
-│   ├── agents/
-│   │   ├── llm_factory.py      # Thread-safe LLM provider factory
-│   │   ├── query_agent.py
-│   │   ├── search_agent.py
-│   │   ├── scraping_agent.py
-│   │   └── summary_agent.py
-│   ├── tasks/
-│   │   ├── query_tasks.py
-│   │   ├── search_tasks.py
-│   │   ├── scraping_tasks.py
-│   │   └── summary_tasks.py
-│   ├── tools/
-│   │   ├── search_tool.py      # Parallel Tavily search
-│   │   └── scraping_tool.py    # Shared executor, no per-call thread pool
-│   ├── models/
-│   │   └── job_model.py
-│   ├── utils/
-│   │   ├── json_output_converter.py  # TOON + JSON parser (semicolon bug fixed)
-│   │   ├── job_fallback.py
-│   │   ├── location_utils.py
-│   │   └── url_utils.py
-│   ├── config.py
-│   └── crew.py                 # Main workflow orchestrator
-├── ui/
-│   └── gradio_app.py
-├── output/
-│   └── .gitkeep
-├── .env.example
-├── .env.ollama.example
-├── requirements.txt
-└── main.py
+|-- app/
+|   |-- agents/          # CrewAI agent factories
+|   |-- models/          # Pydantic models and workflow types
+|   |-- tasks/           # CrewAI task definitions
+|   |-- tools/           # Tavily search and ScrapeGraph tools
+|   |-- utils/           # Filtering, URL, cache, date, and parsing helpers
+|   |-- config.py        # Environment-based application settings
+|   `-- crew.py          # Main workflow orchestration
+|-- ui/
+|   `-- gradio_app.py    # Gradio interface
+|-- output/              # Generated workflow outputs
+|-- .env.example         # Gemini configuration template
+|-- .env.ollama.example  # Ollama configuration template
+|-- requirements.txt
+`-- main.py
 ```
 
-## Setup
+## Requirements
+
+- Python 3.10 or 3.11
+- Tavily API key
+- Gemini API key, unless running with Ollama
+- ScrapeGraph API key, required for scraping official or ATS job pages
+- AgentOps API key, optional
+
+## Installation
 
 ```bash
 git clone <repo-url>
 cd ai-job-search-agent
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-pip install -r requirements.txt
-copy .env.example .env      # Windows
-# cp .env.example .env      # macOS/Linux
 ```
 
-Edit `.env` and add your API keys:
+Activate the virtual environment:
+
+```bash
+# Windows
+.venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create your local environment file:
+
+```bash
+# Windows
+copy .env.example .env
+
+# macOS/Linux
+cp .env.example .env
+```
+
+## Configuration
+
+Edit `.env` and provide the required API keys:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -97,32 +111,68 @@ TAVILY_API_KEY=your_tavily_api_key_here
 SCRAPEGRAPH_API_KEY=your_scrapegraph_api_key_here
 ```
 
-## Run
+Common settings:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `LLM_PROVIDER` | LLM provider to use, such as `gemini` or `ollama` | `gemini` |
+| `LLM_MODEL` | Model name used by CrewAI | `gemini/gemini-2.5-flash` |
+| `FAST_MODE` | Uses direct Tavily fallback workflow for faster results | `true` |
+| `DEFAULT_TOP_RESULTS` | Default number of results shown in the UI | `5` |
+| `DEFAULT_COUNTRY` | Default target country | `Jordan` |
+| `DEFAULT_JOB_TITLE` | Default job title | `AI Engineer` |
+| `DEFAULT_WORK_MODE` | Default work mode filter | `Any` |
+| `MAX_SCRAPE_URLS` | Maximum URLs sent to the scraping step | `3` |
+| `OUTPUT_DIR` | Directory for generated output files | `./output` |
+| `CACHE_DIR` | Directory for cached search and scrape results | `./cache` |
+| `CACHE_TTL_HOURS` | Number of hours before cached data is refreshed | `12` |
+
+To use Ollama, copy the relevant values from `.env.ollama.example` into `.env` and ensure the selected Ollama model is available locally.
+
+## Running the Application
 
 ```bash
 python main.py
 ```
 
-Open: http://127.0.0.1:7860
+By default, the app starts at:
 
-## UI Inputs
-
-| Field | Example |
-|---|---|
-| Job Title | `AI Engineer` |
-| Country | `Jordan` |
-| Your Skills | `LLM, Python, Machine Learning` |
-| Work Mode | `Any`, `Remote`, `Hybrid`, `Onsite` |
-| Number of Results | `5` |
-| Search Score Threshold | `0.3` |
-| Search Language | `English` |
+```text
+http://127.0.0.1:7860
+```
 
 ## Workflow
 
+```text
+User input
+  -> Query generation
+  -> Web search
+  -> URL validation and source classification
+  -> Official/ATS scraping when available
+  -> Job ranking and summarization
+  -> Gradio job cards
 ```
-User inputs → Query Agent → Search Agent → Scraping Agent → Summary Agent → Job Cards
-                               ↓ (parallel Tavily fallback if needed)
-```
+
+When scraping is blocked or unavailable, the application falls back to structured search-result data so users can still review relevant postings.
+
+## Output Files
+
+Generated files are written to the configured `OUTPUT_DIR`:
+
+| File | Purpose |
+| --- | --- |
+| `step_1_search_queries.json` | Generated search queries |
+| `step_2_search_results.json` | Filtered Tavily results |
+| `step_3_extracted_jobs.json` | Scraped job details |
+| `step_4_ranked_jobs.json` | Final ranked jobs |
+| `last_error.txt` | Most recent workflow error, when applicable |
+
+## Notes
+
+- The application never invents job URLs. Final links must come from search results or scraped pages.
+- Search-only job boards are intentionally not scraped.
+- Cache entries expire after 12 hours by default and are refreshed on the next search or scrape.
+- Cache files and generated outputs should not be committed.
 
 ## License
 

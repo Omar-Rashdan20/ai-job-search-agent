@@ -11,7 +11,7 @@ from app.config import (
     SEARCH_SCORE_THRESHOLD,
 )
 from app.crew import run_job_search_crew
-from app.utils.url_utils import is_likely_job_posting_url, is_valid_url
+from app.utils.url_utils import is_likely_job_posting_url
 
 CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;800&family=DM+Sans:wght@300;400;500;700&display=swap');
@@ -274,51 +274,6 @@ def render_job_cards(jobs: list, empty_message: str = "No job results yet. Run a
     return html
 
 
-def render_search_only_cards(jobs: list) -> str:
-    if not jobs:
-        return '<div class="no-results">No search-only results found.</div>'
-
-    html = ""
-    for job in sorted(jobs, key=lambda j: j.get("recommendation_rank", 99)):
-        rank = _html(job.get("recommendation_rank"), "?")
-        title = _html(job.get("job_title"))
-        company = _html(job.get("company_name"))
-        location = _html(job.get("job_location"))
-        summary = _html(job.get("job_summary") or job.get("job_description"), "")
-        source_note = _html(
-            job.get("source_note"),
-            "Search-only result. Open the link to view full details.",
-        )
-        apply_url = job.get("apply_url") or job.get("page_url", "")
-        source = _domain_label(apply_url)
-        apply_html = ""
-
-        if is_valid_url(apply_url):
-            safe_apply_url = escape(str(apply_url), quote=True)
-            apply_html = (
-                f'<a class="apply-btn" href="{safe_apply_url}" target="_blank" '
-                'rel="noopener noreferrer">Open Job</a>'
-            )
-
-        html += f"""
-        <div class="job-card">
-            <div class="job-card-title">#{rank} - {title}</div>
-            <div class="job-meta">
-                Company: {company} &nbsp;|&nbsp;
-                Location: {location} &nbsp;|&nbsp;
-                Website: {source}
-            </div>
-            <span class="badge badge-type">Search-only</span>
-            <span class="badge badge-rank">Rank #{rank}</span>
-            {('<div class="summary-box"><strong>Snippet:</strong> ' + summary + '</div>') if summary else ''}
-            <div class="summary-box"><strong>Source:</strong> {source_note}</div>
-            {apply_html}
-        </div>
-        """
-
-    return html
-
-
 def _progress(message: str) -> str:
     return f'<div class="no-results">{escape(message)}</div>'
 
@@ -332,8 +287,7 @@ def run_search(job_title, country, user_skills, work_mode, no_results, language,
         "Keeping blocked job boards as search-only...",
         "Ranking and summarizing jobs...",
     ):
-        progress = _progress(message)
-        yield progress, progress
+        yield _progress(message)
 
     inputs = {
         "job_title": job_title,
@@ -347,16 +301,11 @@ def run_search(job_title, country, user_skills, work_mode, no_results, language,
     try:
         result = run_job_search_crew(inputs)
         jobs = result.get("jobs", [])
-        scraped_jobs = [job for job in jobs if job.get("source_type") == "scraped"]
-        search_only_jobs = [job for job in jobs if job.get("source_type") == "search_only"]
-        yield _progress("Done."), _progress("Done.")
-        yield (
-            render_job_cards(scraped_jobs, "No scraped official/ATS jobs found."),
-            render_search_only_cards(search_only_jobs),
-        )
+        yield _progress("Done.")
+        yield render_job_cards(jobs, "No job results found.")
     except Exception as exc:
         error_html = f'<div class="no-results">Error: {escape(str(exc))}</div>'
-        yield error_html, error_html
+        yield error_html
 
 
 def build_ui():
@@ -418,20 +367,14 @@ def build_ui():
 
             with gr.Column(scale=2):
                 gr.HTML('<div class="section-header">Results</div>')
-                with gr.Tabs():
-                    with gr.Tab("Scraped Jobs"):
-                        scraped_jobs_html = gr.HTML(
-                            value='<div class="no-results">Run a search to see scraped official/ATS jobs.</div>'
-                        )
-                    with gr.Tab("Search-only Jobs"):
-                        search_only_jobs_html = gr.HTML(
-                            value='<div class="no-results">Run a search to see LinkedIn, Bayt, Indeed, Glassdoor, and similar results.</div>'
-                        )
+                jobs_html = gr.HTML(
+                    value='<div class="no-results">Run a search to see job results.</div>'
+                )
 
         run_btn.click(
             fn=run_search,
             inputs=[job_title, country, user_skills, work_mode, no_results, language, score_th],
-            outputs=[scraped_jobs_html, search_only_jobs_html],
+            outputs=[jobs_html],
         )
 
     return demo
