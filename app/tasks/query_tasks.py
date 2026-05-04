@@ -1,8 +1,14 @@
 import os
+
 from crewai import Task
+
 from app.config import (
-    DEFAULT_COUNTRY, DEFAULT_JOB_TITLE, DEFAULT_LANGUAGE,
-    DEFAULT_TOP_RESULTS, DEFAULT_WEBSITES, OUTPUT_DIR,
+    DEFAULT_COUNTRY,
+    DEFAULT_JOB_TITLE,
+    DEFAULT_LANGUAGE,
+    DEFAULT_TOP_RESULTS,
+    DEFAULT_WORK_MODE,
+    OUTPUT_DIR,
 )
 from app.models.job_model import SearchQuery
 from app.models.workflow_types import DateConstraints
@@ -13,39 +19,29 @@ def create_query_task(agent, inputs: dict, dates: DateConstraints) -> Task:
     country = inputs.get("country", DEFAULT_COUNTRY)
     job_title = inputs.get("job_title", DEFAULT_JOB_TITLE)
     top_results = inputs.get("no_results", DEFAULT_TOP_RESULTS)
-    websites = inputs.get("websites_list", DEFAULT_WEBSITES)
     language = inputs.get("language", DEFAULT_LANGUAGE)
-
-    # Build one example query per website so the agent sees the exact pattern
-    example_queries = ", ".join(
-        f'site:{w} "{job_title}" {country} job description apply now {dates["month_year"]}'
-        for w in (websites if isinstance(websites, list) else [websites])
-    )
+    work_mode = inputs.get("work_mode", DEFAULT_WORK_MODE)
 
     return Task(
         description="\n".join([
             f"A job seeker is looking for: {job_title} positions in {country}.",
-            f"Target job websites: {websites}.",
+            f"Selected work mode: {work_mode}.",
             f"TODAY is {dates['today']}. Only search for jobs posted after {dates['cutoff']}.",
             f"Generate exactly {top_results} unique, complete search queries in {language}.",
-            "",
-            "STRICT RULES — every query MUST:",
-            f"  1. Start with a complete site: operator, e.g. site:linkedin.com",
-            f'  2. Include the job title in double quotes, e.g. "{job_title}"',
-            f"  3. Include the country name: {country}",
-            f"  4. End with: {dates['month_year']}",
-            "  5. Include one of: apply now | job description | urgent hiring",
-            "  6. Be a single complete string — no truncation, no ellipsis",
-            "",
-            "Spread queries across the target websites — use each site at least once.",
-            "Vary role level: remote, hybrid, junior, senior.",
+            "Do not require or ask for target websites.",
+            "Generate broad web queries that can surface official company career pages, ATS pages, and job boards.",
+            "Include official/ATS signals: careers, jobs, greenhouse.io, lever.co, workable.com, ashbyhq.com, smartrecruiters.com.",
+            "Include search-only board signals when useful: LinkedIn, Bayt, Indeed, Glassdoor.",
+            f"Append '{dates['month_year']}' OR 'posted this month' to surface fresh listings.",
+            "Respect selected work mode. If work mode is Any, include a mix of remote, hybrid, and onsite phrasing.",
+            "Every query should include the job title, country, and one of: apply now | job description | urgent hiring.",
+            "Each query should aim for a direct single job posting page, not a listing page.",
+            "Do not invent URLs. Only the search tool may return URLs.",
             "Do NOT use salary terms. Do NOT produce partial or cut-off queries.",
-            "",
-            f"EXAMPLE output (showing the correct shape):\n{example_queries}",
         ]),
         expected_output=(
             "Return ONLY valid TOON. No markdown, no prose, no explanation.\n"
-            "Each query must be a fully written string — no truncation.\n\n"
+            "Each query must be a fully written string, no truncation.\n\n"
             "Format:\n"
             f"queries[{top_results}]: <query 1>,<query 2>,<query 3>"
         ),

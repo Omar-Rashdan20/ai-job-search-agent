@@ -5,14 +5,20 @@ from crewai.tools import tool
 from tavily import TavilyClient
 
 from app.config import TAVILY_API_KEY
+from app.utils.cache_utils import cache_get, cache_set
 from app.utils.date_utils import extract_posting_date, is_on_or_after
-from app.utils.location_utils import mentions_country, normalize_country
 from app.utils.job_relevance import matches_job_title
-from app.utils.url_utils import is_allowed_domain, is_likely_job_posting_url, normalize_domain
+from app.utils.location_utils import mentions_country, normalize_country
+from app.utils.url_utils import (
+    classify_source,
+    deduplicate_results,
+    is_likely_job_page,
+    normalize_url,
+)
+from app.utils.work_mode import matches_work_mode, normalize_work_mode
 
-SEARCH_RESULTS_PER_QUERY = 8
+SEARCH_RESULTS_PER_QUERY = 5
 
-# Module-level singleton — read-only after init, safe for concurrent use.
 _client: Optional[TavilyClient] = None
 
 
@@ -29,57 +35,82 @@ def build_search_engine_tool(
     month_year: str,
     country: str,
     job_title: str,
-    allowed_domains: Optional[list[str]] = None,
+    work_mode: str = "Any",
 ):
     @tool
     def search_engine_tool(query: str) -> dict:
-        """
-        Search for job postings on the web using a search engine.
-        Returns a list of relevant URLs and snippets.
-
-        Args:
-            query: A specific job search query string.
-
-        Returns:
-            dict: Search results with title, url, content, and score.
-        """
         return search_jobs(
-            query,
-            today,
-            cutoff,
-            month_year,
+            query=query,
+            today=today,
+            cutoff=cutoff,
+            month_year=month_year,
             country=country,
             job_title=job_title,
-            allowed_domains=allowed_domains,
+            work_mode=work_mode,
         )
 
     return search_engine_tool
 
 
-def _build_site_filter(allowed_domains: Optional[list[str]]) -> str:
-    domains = [normalize_domain(d) for d in (allowed_domains or []) if normalize_domain(d)]
-    return " OR ".join(f"site:{d}" for d in domains)
-
-
-def _enrich_query(query: str, month_year: str, country: str, job_title: str = "") -> str:
-    """Append freshness and location signals without duplicating site: operators."""
+def _enrich_query(
+    query: str,
+    month_year: str,
+    country: str,
+    job_title: str,
+    work_mode: str,
+) -> str:
     q = query.strip()
 
     if job_title and job_title.lower() not in q.lower():
         q = f"{job_title} {q}"
 
-    # Add month/year freshness signal
+    normalized_work_mode = normalize_work_mode(work_mode)
+    if normalized_work_mode != "Any" and normalized_work_mode.lower() not in q.lower():
+        q = f"{q} {normalized_work_mode}"
+
     if month_year.lower() not in q.lower():
         q = f"{q} {month_year}"
 
-    q = f"{q} job opening apply now"
+    if "job" not in q.lower():
+        q = f"{q} job"
 
-    # Add country if missing
-    normalized = normalize_country(country)
-    if normalized and normalized not in q.lower():
+    q = f"{q} apply now job description"
+
+    normalized_country = normalize_country(country)
+    if normalized_country and normalized_country not in q.lower():
         q = f"{q} {country}"
 
     return q
+
+
+def _is_remote_text(*parts: str) -> bool:
+    text = " ".join(str(p or "") for p in parts).lower()
+    return any(word in text for word in ["remote", "work from home", "anywhere"])
+
+
+def _passes_country_filter(
+    country: str,
+    work_mode: str,
+    title: str = "",
+    content: str = "",
+    raw_content: str = "",
+    url: str = "",
+) -> bool:
+    """
+    Country filter:
+    - If country is mentioned, pass.
+    - If work mode is Remote and result looks remote, pass.
+    - Otherwise reject.
+    """
+    if mentions_country(country, title, content, raw_content, url):
+        return True
+
+    if normalize_work_mode(work_mode) == "Remote" and _is_remote_text(
+        title, content, raw_content, url
+    ):
+        return True
+
+    return False
 
 
 def search_jobs(
@@ -89,63 +120,108 @@ def search_jobs(
     month_year: str,
     country: str,
     job_title: str = "",
+    work_mode: str = "Any",
     max_results: int = SEARCH_RESULTS_PER_QUERY,
-    allowed_domains: Optional[list[str]] = None,
 ) -> dict:
-    # Build query — only inject site: filter when the caller hasn't already included it.
-    enriched = _enrich_query(query, month_year, country, job_title)
-    if "site:" not in enriched.lower():
-        site_filter = _build_site_filter(allowed_domains)
-        if site_filter:
-            enriched = f"{enriched} ({site_filter})"
+    enriched = _enrich_query(query, month_year, country, job_title, work_mode)
 
-    try:
-        raw = _get_client().search(enriched, max_results=max_results, search_depth="basic")
-    except Exception as exc:
-        return {"query": enriched, "results": [], "error": str(exc)}
+    cached = cache_get("tavily_search", enriched)
+
+    if cached is None:
+        try:
+            raw = _get_client().search(
+                enriched,
+                max_results=max_results,
+                search_depth="basic",
+            )
+            cache_set("tavily_search", enriched, raw)
+        except Exception as exc:
+            return {"query": enriched, "results": [], "error": str(exc)}
+    else:
+        raw = cached
 
     filtered: list[dict] = []
     seen_urls: set[str] = set()
 
-    for result in raw.get("results", []):
-        url = str(result.get("url") or "").strip()
+    for result in deduplicate_results(raw.get("results", [])):
+        url = normalize_url(result.get("url"))
+
         if not url or url in seen_urls:
             continue
-        if not is_allowed_domain(url, allowed_domains):
+
+        source_type = classify_source(url)
+
+        if source_type == "invalid":
             continue
-        if not is_likely_job_posting_url(url):
+
+        if not is_likely_job_page(url):
+            continue
+
+        title = result.get("title", "")
+        content = result.get("content", "")
+        raw_content = result.get("raw_content", "")
+
+        if not _passes_country_filter(
+            country=country,
+            work_mode=work_mode,
+            title=title,
+            content=content,
+            raw_content=raw_content,
+            url=url,
+        ):
+            continue
+
+        if not matches_job_title(
+            job_title,
+            title,
+            content,
+            raw_content,
+            url,
+            enriched,
+        ):
+            continue
+
+        if not matches_work_mode(
+            work_mode,
+            title,
+            content,
+            raw_content,
+            url,
+            enriched,
+        ):
             continue
 
         text = " ".join(
-            str(result.get(k, ""))
-            for k in ("title", "url", "content", "raw_content")
+            str(result.get(key, ""))
+            for key in ("title", "url", "content", "raw_content")
         ).lower()
 
-        if not mentions_country(country, text):
-            continue
-        if not matches_job_title(
-            job_title,
-            result.get("title"),
-            result.get("content"),
-            result.get("raw_content"),
-            result.get("url"),
-        ):
-            continue
         if f"posted before {cutoff}" in text:
             continue
+
         posting_date = extract_posting_date(
-            result.get("title"),
-            result.get("content"),
-            result.get("raw_content"),
+            title,
+            content,
+            raw_content,
             today=today,
         )
+
         if posting_date and not is_on_or_after(posting_date, cutoff):
             continue
 
         result["url"] = url
+        result["search_query"] = query
+        result["source_type"] = source_type
+        result["source_note"] = (
+            "Search-only result. Open the link to view full details."
+            if source_type == "search_only"
+            else ""
+        )
+        result["is_verified_url"] = True
+
         if posting_date:
             result["posting_date"] = posting_date
-        result["search_query"] = query
+
         filtered.append(result)
         seen_urls.add(url)
 
@@ -159,28 +235,31 @@ def search_jobs_concurrent(
     month_year: str,
     country: str,
     job_title: str,
+    work_mode: str,
     limit: int,
-    allowed_domains: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Run multiple Tavily queries in parallel and return deduplicated results."""
     results: list[dict] = []
     seen_urls: set[str] = set()
+
+    if not queries:
+        return results
 
     with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as pool:
         futures = {
             pool.submit(
                 search_jobs,
-                q,
+                query,
                 today,
                 cutoff,
                 month_year,
                 country,
                 job_title,
+                work_mode,
                 SEARCH_RESULTS_PER_QUERY,
-                allowed_domains,
-            ): q
-            for q in queries
+            ): query
+            for query in queries
         }
+
         for future in as_completed(futures):
             try:
                 batch = future.result().get("results", [])
@@ -192,6 +271,7 @@ def search_jobs_concurrent(
                 if url and url not in seen_urls:
                     results.append(item)
                     seen_urls.add(url)
+
                     if len(results) >= limit:
                         return results
 

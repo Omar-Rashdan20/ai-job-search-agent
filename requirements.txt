@@ -7,3 +7,4 @@ python-dotenv>=1.0.0
 agentops>=0.3.0
 json-repair>=0.59.0
 google-generativeai>=0.8.0
+requests>=2.31.0

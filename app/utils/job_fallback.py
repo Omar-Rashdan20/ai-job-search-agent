@@ -1,10 +1,10 @@
 from urllib.parse import urlparse
-from typing import Optional
 
 from app.utils.date_utils import extract_posting_date, is_on_or_after
 from app.utils.job_relevance import matches_job_title
 from app.utils.location_utils import mentions_country
-from app.utils.url_utils import sanitize_job_links
+from app.utils.url_utils import classify_source, normalize_url, sanitize_job_links
+from app.utils.work_mode import matches_work_mode
 
 
 def jobs_from_search_results(
@@ -12,15 +12,10 @@ def jobs_from_search_results(
     limit: int,
     country: str,
     job_title: str = "",
+    work_mode: str = "Any",
     today: str = "",
     cutoff: str = "",
-    allowed_domains: Optional[list[str]] = None,
 ) -> list[dict]:
-    """
-    Build lightweight job dicts from raw Tavily search results.
-
-    Used as a fallback when scraping is blocked or the crew returned no jobs.
-    """
     jobs: list[dict] = []
     seen_urls: set[str] = set()
 
@@ -28,26 +23,35 @@ def jobs_from_search_results(
         if len(jobs) >= limit:
             break
 
-        url = str(result.get("url") or "").strip()
+        url = normalize_url(result.get("url"))
         if not url or url in seen_urls:
             continue
 
         title = str(result.get("title") or "Job posting").strip()
         content = str(result.get("content") or result.get("raw_content") or "").strip()
 
+        search_query = str(result.get("search_query") or "")
+
         if not mentions_country(country, title, content, url):
             continue
-        if not matches_job_title(job_title, title, content, url):
+        if not matches_job_title(job_title, title, content, url, search_query):
+            continue
+        if not matches_work_mode(work_mode, title, content, url, search_query):
             continue
 
-        posting_date = extract_posting_date(title, content, today=today)
+        posting_date = result.get("posting_date") or extract_posting_date(title, content, today=today)
         if cutoff and not is_on_or_after(posting_date, cutoff):
             continue
+
+        source_type = result.get("source_type") or classify_source(url)
+        source_note = str(result.get("source_note") or "").strip()
+        if source_type == "search_only" and not source_note:
+            source_note = "Search-only result. Open the link to view full details."
 
         host = urlparse(url).netloc.replace("www.", "") or "unknown"
         summary = content or (
             "This job card was built from search data because detailed "
-            "scraping or summarisation was unavailable."
+            "scraping or summarization was unavailable."
         )
 
         job = sanitize_job_links(
@@ -68,11 +72,14 @@ def jobs_from_search_results(
                 "job_summary": summary,
                 "recommendation_rank": rank,
                 "recommendation_notes": [
-                    "Scraping was unavailable — this card uses Tavily search data."
+                    source_note or "This card uses Tavily search data."
                 ],
                 "skill_gap": [],
+                "source_type": source_type,
+                "source_note": source_note,
+                "is_verified_url": bool(result.get("is_verified_url", False)),
+                "search_query": search_query,
             },
-            allowed_domains=allowed_domains,
         )
 
         if job:

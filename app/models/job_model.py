@@ -76,6 +76,16 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if _is_empty(value):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "verified"}
+    return bool(value)
+
+
 class _NormalizedModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
@@ -114,6 +124,10 @@ class SingleSearchResult(_NormalizedModel):
     content: str = ""
     score: float = 0.0
     search_query: str = ""
+    posting_date: Optional[str] = None
+    source_type: str = "scraped"
+    source_note: str = ""
+    is_verified_url: bool = False
 
     @classmethod
     def _normalize(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +139,10 @@ class SingleSearchResult(_NormalizedModel):
             ),
             "score": _safe_float(data.get("score")),
             "search_query": _clean_text(_first_value(data, "search_query", "query")),
+            "posting_date": _optional_text(_first_value(data, "posting_date", "posted_date")),
+            "source_type": _clean_text(_first_value(data, "source_type"), "scraped"),
+            "source_note": _clean_text(_first_value(data, "source_note", "note")),
+            "is_verified_url": _safe_bool(data.get("is_verified_url", False)),
         }
 
 
@@ -146,6 +164,9 @@ class SingleJob(_NormalizedModel):
     education_level: Optional[str] = Field(default=None, title="Education level")
     job_description: str = Field(default="", title="Job description")
     apply_url: str = Field(default="", title="Direct apply URL")
+    source_type: str = Field(default="scraped", title="Source type")
+    source_note: str = Field(default="", title="Source note")
+    is_verified_url: bool = Field(default=False, title="Whether the URL was verified")
 
     @classmethod
     def _normalize(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -177,6 +198,9 @@ class SingleJob(_NormalizedModel):
             "apply_url": _clean_text(
                 _first_value(data, "apply_url", "application_url", "apply_link", "page_url", "url")
             ),
+            "source_type": _clean_text(_first_value(data, "source_type"), "scraped"),
+            "source_note": _clean_text(_first_value(data, "source_note", "note")),
+            "is_verified_url": _safe_bool(data.get("is_verified_url", False)),
         }
 
 

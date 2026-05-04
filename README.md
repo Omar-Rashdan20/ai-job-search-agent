@@ -1,29 +1,27 @@
 # AI Agent Job Search
 
-A CrewAI-powered job search app that generates targeted queries, searches configured job websites, extracts direct job posting details when possible, and displays ranked job cards in a Gradio interface.
+A CrewAI-powered job search app that generates targeted queries, finds valid job URLs automatically, keeps blocked job boards as search-only results, extracts official/ATS job details when possible, and displays ranked job cards in a Gradio interface.
 
 ## Features
 
 - Generates focused job-search queries from a job title and country.
-- Searches configured target websites with Tavily (queries run in parallel).
-- Extracts structured job details with ScrapeGraph when the site can be scraped.
+- Searches automatically with Tavily (queries run in parallel).
+- Extracts structured job details with ScrapeGraph only for official company or ATS pages.
 - Falls back to Tavily search data when scraping is blocked or unavailable.
+- Keeps LinkedIn, Bayt, Indeed, and Glassdoor as search-only results.
+- Supports work mode filtering: Any, Remote, Hybrid, Onsite.
 - Thread-safe — multiple Gradio sessions don't interfere with each other.
 
-## Supported Default Websites
+## Source Rules
 
-| Domain | Scraping |
+| Source | Behavior |
 |---|---|
-| `linkedin.com` | Search/fallback only (blocked) |
-| `bayt.com` | Search/fallback only (blocked) |
-| `akhtaboot.com` | Full scraping |
-| `tanqeeb.com` | Full scraping |
-
-Change the default list in `.env`:
-
-```env
-DEFAULT_WEBSITES=linkedin.com,bayt.com,akhtaboot.com,tanqeeb.com
-```
+| `linkedin.com` | Search-only |
+| `bayt.com` | Search-only |
+| `indeed.com` | Search-only |
+| `glassdoor.com` | Search-only |
+| Official company career pages | Scraped when they look like direct job pages |
+| ATS pages such as `greenhouse.io`, `lever.co`, `workable.com`, `ashbyhq.com`, `smartrecruiters.com` | Scraped |
 
 ## Tech Stack
 
@@ -114,6 +112,7 @@ Open: http://127.0.0.1:7860
 | Job Title | `AI Engineer` |
 | Country | `Jordan` |
 | Your Skills | `LLM, Python, Machine Learning` |
+| Work Mode | `Any`, `Remote`, `Hybrid`, `Onsite` |
 | Number of Results | `5` |
 | Search Score Threshold | `0.3` |
 | Search Language | `English` |

@@ -17,7 +17,8 @@ from app.config import (
     DEFAULT_COUNTRY,
     DEFAULT_JOB_TITLE,
     DEFAULT_TOP_RESULTS,
-    DEFAULT_WEBSITES,
+    DEFAULT_WORK_MODE,
+    FAST_MODE,
     LLM_FALLBACK_TO_OLLAMA,
     LLM_PROVIDER,
     LINK_CHECK_TIMEOUT_SECONDS,
@@ -31,11 +32,13 @@ from app.tasks.summary_tasks import create_summary_task
 from app.tools.scraping_tool import build_web_scraping_tool
 from app.tools.search_tool import build_search_engine_tool, search_jobs
 from app.models.workflow_types import DateConstraints
+from app.utils.agentops_session import record_agentops_event
 from app.utils.date_utils import extract_posting_date, is_on_or_after
 from app.utils.job_fallback import jobs_from_search_results
 from app.utils.job_relevance import matches_job_title
 from app.utils.location_utils import mentions_country
-from app.utils.url_utils import is_allowed_domain, is_reachable_job_url, sanitize_job_links
+from app.utils.url_utils import is_reachable_job_url, sanitize_job_links
+from app.utils.work_mode import matches_work_mode, normalize_work_mode
 
 RANKED_JOBS_FILE = "step_4_ranked_jobs.json"
 ERROR_FILE = "last_error.txt"
@@ -77,16 +80,12 @@ def _clear_previous_outputs() -> None:
 
 def _prepare_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     prepared = dict(inputs)
-    prepared["job_title"] = prepared.get("job_title") or DEFAULT_JOB_TITLE
-    prepared["country"] = prepared.get("country") or DEFAULT_COUNTRY
+    prepared["job_title"] = str(prepared.get("job_title") or DEFAULT_JOB_TITLE).strip()
+    prepared["country"] = str(prepared.get("country") or DEFAULT_COUNTRY).strip()
     prepared["user_skills"] = prepared.get("user_skills") or "Not specified"
+    prepared["work_mode"] = normalize_work_mode(prepared.get("work_mode") or DEFAULT_WORK_MODE)
     prepared["no_results"] = max(1, int(prepared.get("no_results") or DEFAULT_TOP_RESULTS))
     prepared["scrape_limit"] = min(prepared["no_results"], MAX_SCRAPE_URLS)
-
-    websites = prepared.get("websites_list") or DEFAULT_WEBSITES
-    if isinstance(websites, str):
-        websites = [item.strip() for item in websites.split(",") if item.strip()]
-    prepared["websites_list"] = websites or DEFAULT_WEBSITES
 
     return prepared
 
@@ -96,13 +95,13 @@ def _build_user_context(inputs: dict[str, Any], dates: DateConstraints) -> Strin
         content=(
             f"The user is looking for a {inputs['job_title']} role "
             f"in {inputs['country']}. "
-            f"Target job websites: {inputs['websites_list']}. "
             f"Their current skills are: {inputs['user_skills']}. "
+            f"Selected work mode: {inputs['work_mode']}. "
             f"TODAY is {dates['today']}. Only use jobs posted after {dates['cutoff']}. "
             f"Only use jobs located in or clearly tied to {inputs['country']}. "
-            "Only keep direct single job posting pages from the target websites. "
-            "Reject listing pages, search pages, aggregators, old postings, salary-only pages, "
-            "and any invented or rewritten URLs."
+            "Never invent URLs. Only use URLs returned by search tools. "
+            "Keep LinkedIn, Bayt, Indeed, and Glassdoor as search-only results. "
+            "Scrape only official company or ATS job pages."
         )
     )
 
@@ -128,14 +127,21 @@ def _save_error(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _job_matches_country(job: dict, country: str) -> bool:
-    return mentions_country(
-        country,
-        job.get("job_location"),
+    source_values = (
         job.get("job_title"),
         job.get("job_description"),
         job.get("job_summary"),
         job.get("page_url"),
         job.get("apply_url"),
+    )
+
+    if job.get("search_query"):
+        return mentions_country(country, *source_values)
+
+    return mentions_country(
+        country,
+        job.get("job_location"),
+        *source_values,
     )
 
 
@@ -148,11 +154,26 @@ def _job_matches_title(job: dict, job_title: str) -> bool:
         job.get("required_skills"),
         job.get("page_url"),
         job.get("apply_url"),
+        job.get("search_query"),
+    )
+
+
+def _job_matches_work_mode(job: dict, work_mode: str) -> bool:
+    return matches_work_mode(
+        work_mode,
+        job.get("job_title"),
+        job.get("job_location"),
+        job.get("job_type"),
+        job.get("job_description"),
+        job.get("job_summary"),
+        job.get("page_url"),
+        job.get("apply_url"),
+        job.get("search_query"),
     )
 
 
 def _sanitize_jobs(
-    jobs: list[dict], allowed_domains: list[str], country: str, job_title: str
+    jobs: list[dict], country: str, job_title: str, work_mode: str
 ) -> list[dict]:
     out: list[dict] = []
     for job in jobs:
@@ -162,14 +183,16 @@ def _sanitize_jobs(
             continue
         if not _job_matches_title(job, job_title):
             continue
-        cleaned = sanitize_job_links(job, allowed_domains=allowed_domains)
+        if not _job_matches_work_mode(job, work_mode):
+            continue
+        cleaned = sanitize_job_links(job)
         if cleaned:
             out.append(cleaned)
     return out
 
 
 def _load_sanitized_jobs(
-    jobs_path: str, allowed_domains: list[str], country: str, job_title: str
+    jobs_path: str, country: str, job_title: str, work_mode: str
 ) -> list[dict]:
     if not os.path.exists(jobs_path):
         return []
@@ -178,7 +201,7 @@ def _load_sanitized_jobs(
     except (OSError, json.JSONDecodeError):
         return []
 
-    jobs = _sanitize_jobs(data.get("jobs", []), allowed_domains, country, job_title)
+    jobs = _sanitize_jobs(data.get("jobs", []), country, job_title, work_mode)
     if jobs:
         # Only write back when something actually changed.
         data["jobs"] = jobs
@@ -186,7 +209,7 @@ def _load_sanitized_jobs(
     return jobs
 
 
-def _load_extracted_jobs(allowed_domains: list[str], country: str, job_title: str) -> list[dict]:
+def _load_extracted_jobs(country: str, job_title: str, work_mode: str) -> list[dict]:
     path = os.path.join(OUTPUT_DIR, "step_3_extracted_jobs.json")
     if not os.path.exists(path):
         return []
@@ -197,7 +220,7 @@ def _load_extracted_jobs(allowed_domains: list[str], country: str, job_title: st
 
     jobs: list[dict] = []
     for index, job in enumerate(
-        _sanitize_jobs(data.get("jobs", []), allowed_domains, country, job_title), start=1
+        _sanitize_jobs(data.get("jobs", []), country, job_title, work_mode), start=1
     ):
         job.setdefault("job_summary", job.get("job_description", ""))
         job.setdefault("recommendation_rank", index)
@@ -209,7 +232,7 @@ def _load_extracted_jobs(allowed_domains: list[str], country: str, job_title: st
     return jobs
 
 
-def _load_search_results(allowed_domains: list[str], country: str, job_title: str) -> list[dict]:
+def _load_search_results(country: str, job_title: str, work_mode: str) -> list[dict]:
     path = os.path.join(OUTPUT_DIR, "step_2_search_results.json")
     if not os.path.exists(path):
         return []
@@ -223,7 +246,6 @@ def _load_search_results(allowed_domains: list[str], country: str, job_title: st
         for item in data.get("results", [])
         if (
             isinstance(item, dict)
-            and is_allowed_domain(item.get("url"), allowed_domains)
             and mentions_country(
                 country,
                 item.get("title"),
@@ -238,6 +260,13 @@ def _load_search_results(allowed_domains: list[str], country: str, job_title: st
                 item.get("raw_content"),
                 item.get("url"),
             )
+            and matches_work_mode(
+                work_mode,
+                item.get("title"),
+                item.get("content"),
+                item.get("raw_content"),
+                item.get("url"),
+            )
         )
     ]
 
@@ -247,7 +276,7 @@ def _save_jobs(jobs_path: str, jobs: list[dict]) -> None:
 
 
 def _filter_reachable_jobs(jobs: list[dict], limit: int) -> list[dict]:
-    """Keep only final jobs whose apply/page link appears to resolve."""
+    """Verify final links when possible without turning transient blocks into empty results."""
     if not jobs:
         return []
 
@@ -269,16 +298,18 @@ def _filter_reachable_jobs(jobs: list[dict], limit: int) -> list[dict]:
                 reachable_by_index[index] = False
 
     verified: list[dict] = []
+    unverified: list[dict] = []
     for index, job in enumerate(jobs):
-        if not reachable_by_index.get(index):
-            continue
-        job["link_status"] = "verified"
-        job["recommendation_rank"] = len(verified) + 1
-        verified.append(job)
-        if len(verified) >= limit:
-            break
+        job["is_verified_url"] = bool(job.get("is_verified_url") or reachable_by_index.get(index))
+        if job["is_verified_url"]:
+            verified.append(job)
+        else:
+            unverified.append(job)
 
-    return verified
+    final = (verified + unverified)[:limit]
+    for rank, job in enumerate(final, start=1):
+        job["recommendation_rank"] = rank
+    return final
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +320,9 @@ def _merge_jobs(
     primary: list[dict],
     fallback: list[dict],
     limit: int,
-    allowed_domains: list[str],
     country: str,
     job_title: str,
+    work_mode: str,
 ) -> list[dict]:
     """
     Merge primary (crew-ranked) with fallback (search-result) jobs.
@@ -309,6 +340,8 @@ def _merge_jobs(
             continue
         if not _job_matches_title(job, job_title):
             continue
+        if not _job_matches_work_mode(job, work_mode):
+            continue
         url = job.get("apply_url", "")
         if not url or url in seen_urls:
             continue
@@ -323,7 +356,9 @@ def _merge_jobs(
             continue
         if not _job_matches_title(job, job_title):
             continue
-        cleaned = sanitize_job_links(job, allowed_domains=allowed_domains)
+        if not _job_matches_work_mode(job, work_mode):
+            continue
+        cleaned = sanitize_job_links(job)
         if not cleaned:
             continue
         url = cleaned["apply_url"]
@@ -373,12 +408,15 @@ def _enrich_job_fit_fields(
 # ---------------------------------------------------------------------------
 
 def _direct_tavily_results(inputs: dict[str, Any], dates: DateConstraints) -> list[dict]:
-    websites = inputs.get("websites_list") or []
     queries = [
-        f"{inputs['job_title']} {inputs['country']} site:{website}"
-        for website in websites
+        f"{inputs['job_title']} {inputs['country']} careers apply now job description",
+        f"{inputs['job_title']} {inputs['country']} site:greenhouse.io OR site:lever.co OR site:workable.com OR site:ashbyhq.com OR site:smartrecruiters.com",
+        f"{inputs['job_title']} {inputs['country']} site:linkedin.com/jobs/view",
+        f"{inputs['job_title']} {inputs['country']} site:indeed.com/viewjob OR site:bayt.com OR site:glassdoor.com/job-listing",
     ]
-    limit = max(inputs["no_results"] * 3, inputs["no_results"] + 4)
+    if inputs["work_mode"] != "Any":
+        queries = [f"{query} {inputs['work_mode']}" for query in queries]
+    limit = inputs["no_results"] + 2
     results: list[dict] = []
     seen: set[str] = set()
 
@@ -392,7 +430,7 @@ def _direct_tavily_results(inputs: dict[str, Any], dates: DateConstraints) -> li
                 dates["month_year"],
                 country=inputs["country"],
                 job_title=inputs["job_title"],
-                allowed_domains=websites,
+                work_mode=inputs["work_mode"],
             ): q
             for q in queries
         }
@@ -410,6 +448,32 @@ def _direct_tavily_results(inputs: dict[str, Any], dates: DateConstraints) -> li
                 break
 
     return results
+
+
+def _fast_search_jobs(inputs: dict[str, Any], dates: DateConstraints) -> list[dict]:
+    search_results = _direct_tavily_results(inputs, dates)
+    candidate_limit = inputs["no_results"] + 2
+    fallback_jobs = jobs_from_search_results(
+        search_results,
+        candidate_limit,
+        country=inputs["country"],
+        job_title=inputs["job_title"],
+        work_mode=inputs["work_mode"],
+        today=dates["today"],
+        cutoff=dates["cutoff"],
+    )
+    jobs = _merge_jobs(
+        [],
+        fallback_jobs,
+        candidate_limit,
+        country=inputs["country"],
+        job_title=inputs["job_title"],
+        work_mode=inputs["work_mode"],
+    )
+    jobs = _filter_reachable_jobs(jobs, inputs["no_results"])
+    return _enrich_job_fit_fields(
+        jobs, inputs["user_skills"], dates["today"], dates["cutoff"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -467,101 +531,136 @@ def run_job_search_crew(inputs: dict) -> JobSearchResult:
     inputs = _prepare_inputs(inputs)
     dates = _get_date_constraints()
     _clear_previous_outputs()
-
-    search_tool = build_search_engine_tool(
-        today=dates["today"],
-        cutoff=dates["cutoff"],
-        month_year=dates["month_year"],
-        country=inputs["country"],
-        job_title=inputs["job_title"],
-        allowed_domains=inputs["websites_list"],
+    jobs_path = os.path.join(OUTPUT_DIR, RANKED_JOBS_FILE)
+    record_agentops_event(
+        "Job search started",
+        {
+            "job_title": inputs.get("job_title"),
+            "country": inputs.get("country"),
+            "work_mode": inputs.get("work_mode"),
+            "no_results": inputs.get("no_results"),
+        },
+        "started",
     )
-    scraping_tool = build_web_scraping_tool(
-        today=dates["today"],
-        cutoff=dates["cutoff"],
-        country=inputs["country"],
-        allowed_domains=inputs["websites_list"],
-    )
-
-    crew_error: str | None = None
-    set_llm_provider_override(None)
 
     try:
-        _run_crew_once(inputs, dates, search_tool, scraping_tool)
-    except Exception as exc:
-        if (
-            LLM_FALLBACK_TO_OLLAMA
-            and LLM_PROVIDER == "gemini"
-            and _is_quota_or_rate_limit_error(exc)
-        ):
-            first_error = f"{type(exc).__name__}: {exc}"
-            try:
-                set_llm_provider_override("ollama")
-                _run_crew_once(inputs, dates, search_tool, scraping_tool)
-                _save_error(
-                    f"Gemini failed with quota/rate-limit; retried with Ollama "
-                    f"({get_active_llm_provider()}). "
-                    f"Original Gemini error: {first_error}"
-                )
-            except Exception as fallback_exc:
-                crew_error = (
-                    f"Gemini failed, then Ollama fallback also failed.\n"
-                    f"Gemini error: {first_error}\n"
-                    f"Ollama error: {type(fallback_exc).__name__}: {fallback_exc}\n"
-                    f"Ollama traceback:\n{traceback.format_exc()}"
-                )
-                _save_error(crew_error)
-        else:
-            crew_error = f"{type(exc).__name__}: {exc}"
-            _save_error(crew_error)
-    finally:
-        set_llm_provider_override(None)
+        if FAST_MODE:
+            jobs = _fast_search_jobs(inputs, dates)
+            _save_jobs(jobs_path, jobs)
+            result = {"jobs_json_path": jobs_path, "jobs": jobs}
+            record_agentops_event(
+                "Job search finished",
+                {"success": True, "jobs": len(jobs), "mode": "fast"},
+                "finished",
+            )
+            return result
 
-    # --- Load outputs produced by the crew ---
-    jobs_path = os.path.join(OUTPUT_DIR, RANKED_JOBS_FILE)
-    jobs = _load_sanitized_jobs(
-        jobs_path, inputs["websites_list"], inputs["country"], inputs["job_title"]
-    )
-    extracted_jobs = _load_extracted_jobs(
-        inputs["websites_list"], inputs["country"], inputs["job_title"]
-    )
-    search_results = _load_search_results(
-        inputs["websites_list"], inputs["country"], inputs["job_title"]
-    )
-
-    # --- Supplement with direct Tavily results when the crew fell short ---
-    if not search_results or len(jobs) < inputs["no_results"]:
-        search_results.extend(_direct_tavily_results(inputs, dates))
-
-    candidate_limit = max(inputs["no_results"] * 3, inputs["no_results"] + 4)
-    fallback_jobs = jobs_from_search_results(
-        search_results,
-        candidate_limit,
-        country=inputs["country"],
-        job_title=inputs["job_title"],
-        today=dates["today"],
-        cutoff=dates["cutoff"],
-        allowed_domains=inputs["websites_list"],
-    )
-
-    jobs = _merge_jobs(
-        jobs + extracted_jobs,
-        fallback_jobs,
-        candidate_limit,
-        allowed_domains=inputs["websites_list"],
-        country=inputs["country"],
-        job_title=inputs["job_title"],
-    )
-    jobs = _filter_reachable_jobs(jobs, inputs["no_results"])
-    jobs = _enrich_job_fit_fields(
-        jobs, inputs["user_skills"], dates["today"], dates["cutoff"]
-    )
-    _save_jobs(jobs_path, jobs)
-
-    if crew_error and not jobs:
-        raise RuntimeError(
-            "The job search returned no results because the CrewAI workflow failed. "
-            f"Details saved to {os.path.join(OUTPUT_DIR, ERROR_FILE)}: {crew_error}"
+        search_tool = build_search_engine_tool(
+            today=dates["today"],
+            cutoff=dates["cutoff"],
+            month_year=dates["month_year"],
+            country=inputs["country"],
+            job_title=inputs["job_title"],
+            work_mode=inputs["work_mode"],
+        )
+        scraping_tool = build_web_scraping_tool(
+            today=dates["today"],
+            cutoff=dates["cutoff"],
+            country=inputs["country"],
+            work_mode=inputs["work_mode"],
         )
 
-    return {"jobs_json_path": jobs_path, "jobs": jobs}
+        crew_error: str | None = None
+        set_llm_provider_override(None)
+
+        try:
+            _run_crew_once(inputs, dates, search_tool, scraping_tool)
+        except Exception as exc:
+            if (
+                LLM_FALLBACK_TO_OLLAMA
+                and LLM_PROVIDER == "gemini"
+                and _is_quota_or_rate_limit_error(exc)
+            ):
+                first_error = f"{type(exc).__name__}: {exc}"
+                try:
+                    set_llm_provider_override("ollama")
+                    _run_crew_once(inputs, dates, search_tool, scraping_tool)
+                    _save_error(
+                        f"Gemini failed with quota/rate-limit; retried with Ollama "
+                        f"({get_active_llm_provider()}). "
+                        f"Original Gemini error: {first_error}"
+                    )
+                except Exception as fallback_exc:
+                    crew_error = (
+                        f"Gemini failed, then Ollama fallback also failed.\n"
+                        f"Gemini error: {first_error}\n"
+                        f"Ollama error: {type(fallback_exc).__name__}: {fallback_exc}\n"
+                        f"Ollama traceback:\n{traceback.format_exc()}"
+                    )
+                    _save_error(crew_error)
+            else:
+                crew_error = f"{type(exc).__name__}: {exc}"
+                _save_error(crew_error)
+        finally:
+            set_llm_provider_override(None)
+
+        # --- Load outputs produced by the crew ---
+        jobs = _load_sanitized_jobs(
+            jobs_path, inputs["country"], inputs["job_title"], inputs["work_mode"]
+        )
+        extracted_jobs = _load_extracted_jobs(
+            inputs["country"], inputs["job_title"], inputs["work_mode"]
+        )
+        search_results = _load_search_results(
+            inputs["country"], inputs["job_title"], inputs["work_mode"]
+        )
+
+        # --- Supplement with direct Tavily results when the crew fell short ---
+        if not search_results or len(jobs) < inputs["no_results"]:
+            search_results.extend(_direct_tavily_results(inputs, dates))
+
+        candidate_limit = max(inputs["no_results"] * 3, inputs["no_results"] + 4)
+        fallback_jobs = jobs_from_search_results(
+            search_results,
+            candidate_limit,
+            country=inputs["country"],
+            job_title=inputs["job_title"],
+            work_mode=inputs["work_mode"],
+            today=dates["today"],
+            cutoff=dates["cutoff"],
+        )
+
+        jobs = _merge_jobs(
+            jobs + extracted_jobs,
+            fallback_jobs,
+            candidate_limit,
+            country=inputs["country"],
+            job_title=inputs["job_title"],
+            work_mode=inputs["work_mode"],
+        )
+        jobs = _filter_reachable_jobs(jobs, inputs["no_results"])
+        jobs = _enrich_job_fit_fields(
+            jobs, inputs["user_skills"], dates["today"], dates["cutoff"]
+        )
+        _save_jobs(jobs_path, jobs)
+
+        if crew_error and not jobs:
+            raise RuntimeError(
+                "The job search returned no results because the CrewAI workflow failed. "
+                f"Details saved to {os.path.join(OUTPUT_DIR, ERROR_FILE)}: {crew_error}"
+            )
+
+        result = {"jobs_json_path": jobs_path, "jobs": jobs}
+        record_agentops_event(
+            "Job search finished",
+            {"success": True, "jobs": len(jobs), "mode": "crew"},
+            "finished",
+        )
+        return result
+    except Exception as exc:
+        record_agentops_event(
+            "Job search finished",
+            {"success": False, "reason": str(exc)},
+            str(exc),
+        )
+        raise
