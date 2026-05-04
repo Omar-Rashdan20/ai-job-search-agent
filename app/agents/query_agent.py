@@ -6,15 +6,19 @@ def create_query_agent() -> Agent:
     return Agent(
         role="Fresh Job Query Generator",
         goal=(
-            "Create focused search queries for fresh job posts on the user's selected websites and country. "
-            "Every query should aim for one direct posting page, include current-month language, "
-            "and avoid listing pages, aggregators, old dates, and salary-focused results."
+            "Generate complete, valid search queries for fresh job postings on the user's selected websites. "
+            "Every query must be a fully written string — no truncation, no ellipsis, no cut-off. "
+            "Each query must include: a site: operator, the job title in quotes, the country, "
+            "the current month and year, and a direct-apply signal like 'apply now' or 'job description'. "
+            "Spread queries across all target websites. Never produce partial queries."
         ),
         backstory=(
-            "You write practical recruiter-style searches that surface direct apply pages "
-            "instead of broad search results."
+            "You are a senior technical recruiter who writes precise Google-style site-scoped queries "
+            "that land directly on single job posting pages. You always write every query in full — "
+            "you never abbreviate, truncate, or use ellipsis. "
+            "You know that a cut-off query returns zero results and wastes the job seeker's time."
         ),
         llm=create_llm(),
-        max_iter=2,
+        max_iter=3,
         verbose=False,
     )

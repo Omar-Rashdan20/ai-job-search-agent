@@ -12,7 +12,6 @@ from app.config import (
     OLLAMA_MODEL,
 )
 
-# Per-thread override so concurrent Gradio requests don't stomp each other.
 _thread_local = threading.local()
 
 
@@ -24,7 +23,7 @@ def get_active_llm_provider() -> str:
     return getattr(_thread_local, "provider", None) or LLM_PROVIDER
 
 
-def create_llm(max_tokens: int = 1024) -> LLM:
+def create_llm(max_tokens: int = 4096) -> LLM:
     provider = get_active_llm_provider()
 
     if provider == "ollama":

@@ -7,31 +7,38 @@ from app.utils.json_output_converter import ToonOutputConverter
 
 
 def create_search_task(agent, inputs: dict, dates: DateConstraints) -> Task:
-    score_threshold = inputs.get("score_th", SEARCH_SCORE_THRESHOLD)
     country = inputs.get("country", DEFAULT_COUNTRY)
     websites = inputs.get("websites_list", DEFAULT_WEBSITES)
+    # Use a low hard floor so borderline results are not silently dropped;
+    # the crew.py pipeline re-filters with the user-configured threshold.
+    score_floor = max(0.05, float(inputs.get("score_th", SEARCH_SCORE_THRESHOLD)) - 0.15)
 
     return Task(
         description="\n".join([
-            "Run the search engine tool for every generated query.",
+            "Run the search engine tool for EVERY query produced in the previous step.",
             f"Target job websites: {websites}.",
-            f"Only keep results for the provided country: {country}.",
-            f"TODAY is {dates['today']}. Keep only jobs posted after {dates['cutoff']}.",
-            "Discard every URL whose domain is not one of the target job websites.",
-            "Collect the strongest direct job results for each query.",
-            f"Discard results whose title, snippet, URL, or location does not mention {country}.",
-            f"Prefer results mentioning '{dates['month_year']}' OR 'posted this month'.",
-            "Use fresh hiring signals: apply now, job description, urgent hiring, remote, hybrid.",
-            "Each result MUST be a SINGLE job posting page with a unique job ID, not a listing page.",
-            "Reject aggregator pages, company search pages, category pages, blogs, and news articles.",
-            "Reject salary-only pages and do not keep salary-focused results.",
-            f"Ignore results with a confidence score below {score_threshold}.",
-            "Deduplicate URLs. Do not include the same job posting twice.",
+            f"Country filter: {country} — keep only results that mention {country}.",
+            f"Date filter: TODAY is {dates['today']}. Keep only jobs posted after {dates['cutoff']}.",
+            "",
+            "ACCEPTANCE RULES:",
+            f"  • URL domain must be one of the target websites.",
+            f"  • Title or snippet must mention {country}.",
+            f"  • Page must be a SINGLE job posting (unique job ID in the URL), not a listing page.",
+            f"  • Confidence score must be ≥ {score_floor:.2f}.",
+            "  • Reject: aggregator pages, search pages, category pages, blogs, salary-only pages.",
+            "  • Deduplicate by URL — never repeat the same posting.",
+            "",
+            "IMPORTANT: If a query returns zero results from the search tool, still try every other query.",
+            "Do not stop early. Run all queries and collect every valid result you find.",
+            f"Prefer results that mention '{dates['month_year']}' or 'posted this month'.",
         ]),
         expected_output=(
-            "Return ONLY valid TOON, no markdown or prose. Example:\n"
-            "results[1]{title,url,content,score,search_query}:\n"
-            "  Job title,https://example.com/job/123,Short snippet,0.9,original query"
+            "Return ONLY valid TOON. No markdown, no prose.\n\n"
+            "If results were found:\n"
+            "results[N]{title,url,content,score,search_query}:\n"
+            "  Job Title,https://site.com/jobs/12345,Short snippet,0.85,original query\n\n"
+            "If truly nothing was found after running all queries:\n"
+            "results[0]{title,url,content,score,search_query}:"
         ),
         output_pydantic=AllSearchResults,
         converter_cls=ToonOutputConverter,

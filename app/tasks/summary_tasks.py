@@ -14,32 +14,41 @@ def create_summary_task(agent, inputs: dict, dates: DateConstraints) -> Task:
 
     return Task(
         description="\n".join([
-            f"Review the extracted job listings for this job seeker: {job_title} positions in {country}.",
+            f"Rank and summarise the extracted job listings for: {job_title} in {country}.",
             f"Target job websites: {websites}.",
-            f"Only keep jobs located in or clearly tied to {country}.",
             f"TODAY is {dates['today']}. Only rank jobs posted after {dates['cutoff']}.",
-            'If there are no extracted jobs, return {"jobs": []}.',
-            "Do not create new jobs or URLs during summarization.",
-            "Remove jobs with old posting dates, expired deadlines, missing URLs, or listing-page URLs.",
-            "Keep only jobs that appear open and accepting applications.",
-            "Preserve posting dates, deadlines, and start dates from extracted jobs.",
-            "Only leave date fields null when the source does not show a date.",
-            "Write a 3-5 sentence summary covering role, company, responsibilities, posting date, and deadline.",
-            "Rank jobs from 1 (best) to N (worst) using freshness, clarity, company quality, location flexibility, and fit.",
-            "Add 2-4 recommendation notes explaining why the job is useful or weak for the seeker.",
-            f"Compare required skills against this user skill profile: [{user_skills}].",
-            "List missing skills in skill_gap.",
-            "Do not mention or use salary information.",
+            "",
+            "If the extracted jobs list is empty, output {\"jobs\": []} immediately — do not invent jobs.",
+            "",
+            "FILTERING (apply before ranking):",
+            f"  • Drop jobs not located in or clearly tied to {country}.",
+            "  • Drop jobs with old posting dates, expired deadlines, or missing/listing-page URLs.",
+            "  • Keep only jobs that appear open and actively accepting applications.",
+            "",
+            "FOR EACH remaining job:",
+            "  • Preserve all original field values — do NOT change URLs, dates, or titles.",
+            "  • Write a 3–5 sentence summary: role, company, responsibilities, posting date, deadline.",
+            "  • Rank from 1 (best) to N using: freshness, clarity, company quality, location fit, skill match.",
+            "  • Add 2–4 recommendation notes explaining strengths or weaknesses for this seeker.",
+            f"  • Compare required skills against user profile: [{user_skills}].",
+            "  • List any missing skills in skill_gap.",
+            "  • Do NOT mention or include salary information.",
         ]),
         expected_output=(
-            "Return ONLY valid TOON, no markdown or prose. Use semicolons inside list fields. Example:\n"
-            "jobs[1]{page_url,job_title,company_name,job_location,job_type,posting_date,"
+            "Return ONLY valid TOON. No markdown, no prose. Use semicolons inside list fields.\n\n"
+            "If ranked jobs exist:\n"
+            "jobs[N]{page_url,job_title,company_name,job_location,job_type,posting_date,"
             "application_deadline,expected_start_date,required_experience,required_skills,"
             "education_level,job_description,apply_url,job_summary,recommendation_rank,"
             "recommendation_notes,skill_gap}:\n"
-            "  https://example.com/job/123,AI Engineer,Company,Jordan,Full-time,2026-05-01,"
+            "  https://site.com/job/123,AI Engineer,Acme,Jordan,Full-time,2026-05-01,"
             "2026-05-30,null,2 years,Python; LLM,Bachelor,Short description,"
-            "https://example.com/apply/123,Summary of the role,1,Strong fit; Fresh post,SQL; Docker"
+            "https://site.com/apply/123,Summary of the role.,1,Strong fit; Fresh post,SQL; Docker\n\n"
+            "If no jobs passed filtering:\n"
+            "jobs[0]{page_url,job_title,company_name,job_location,job_type,posting_date,"
+            "application_deadline,expected_start_date,required_experience,required_skills,"
+            "education_level,job_description,apply_url,job_summary,recommendation_rank,"
+            "recommendation_notes,skill_gap}:"
         ),
         output_pydantic=AllJobsWithSummary,
         converter_cls=ToonOutputConverter,
