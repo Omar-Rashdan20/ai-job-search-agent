@@ -26,6 +26,8 @@ env/
 output/*.json
 output/*.html
 output/*.txt
+cache/*
+!cache/.gitkeep
 
 # IDE
 .gradio/
