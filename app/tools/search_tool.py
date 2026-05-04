@@ -39,6 +39,7 @@ def build_search_engine_tool(
 ):
     @tool
     def search_engine_tool(query: str) -> dict:
+        """Search the web for fresh job posting URLs matching the user's filters."""
         return search_jobs(
             query=query,
             today=today,

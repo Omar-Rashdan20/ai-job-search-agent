@@ -8,6 +8,7 @@ try:
 except ModuleNotFoundError:
     requests = None
 
+from app.config import SEARCH_ONLY_DOMAINS
 from app.utils.cache_utils import cache_get, cache_set
 
 REQUEST_TIMEOUT_SECONDS = 5
@@ -40,6 +41,19 @@ _ATS_DOMAINS: tuple[str, ...] = (
     "workable.com",
     "ashbyhq.com",
     "smartrecruiters.com",
+)
+
+SCRAPE_ALLOWED_KEYWORDS: tuple[str, ...] = (
+    "/career",
+    "/careers",
+    "/job",
+    "/jobs",
+    "/position",
+    "/positions",
+    "/opening",
+    "/openings",
+    "/vacancy",
+    "/vacancies",
 )
 
 _JOB_BOARD_DOMAINS: tuple[str, ...] = (
@@ -121,12 +135,15 @@ def normalize_domain(value: object) -> str:
 
 def _host_matches(host: str, domains: list[str] | tuple[str, ...]) -> bool:
     normalized = normalize_domain(host)
-    return any(
-        normalized == domain
-        or normalized.endswith(f".{domain}")
-        or domain in normalized
-        for domain in domains
-    )
+    for domain in domains:
+        domain = normalize_domain(domain)
+        if not domain:
+            continue
+        if normalized == domain or normalized.endswith(f".{domain}"):
+            return True
+        if domain.endswith(".") and domain in normalized:
+            return True
+    return False
 
 
 def is_allowed_domain(value: object, allowed_domains: Optional[list[str]]) -> bool:
@@ -302,16 +319,11 @@ def sanitize_job_links(
     if not is_allowed_domain(apply_url, allowed_domains):
         return None
 
-    source_type = cleaned.get("source_type") or page_source
-    if source_type not in {"scraped", "search_only"}:
-        source_type = page_source
+    source_type = "search_only" if "search_only" in {page_source, apply_source} else page_source
 
     cleaned["page_url"] = page_url
     cleaned["apply_url"] = apply_url
     cleaned["source_type"] = source_type
-    if source_type == "search_only":
-        cleaned.setdefault(
-            "source_note",
-            "Search-only result. Open the link to view full details.",
-        )
+    if source_type == "search_only" and not cleaned.get("source_note"):
+        cleaned["source_note"] = "Search-only result. Open the link to view full details."
     return cleaned

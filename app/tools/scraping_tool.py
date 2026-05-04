@@ -55,6 +55,7 @@ def build_web_scraping_tool(
 
     @tool
     def web_scraping_tool(page_url: str) -> dict:
+        """Extract structured job details from one official company or ATS job URL."""
         normalized_url = normalize_url(page_url)
         source_type = classify_source(normalized_url)
 
