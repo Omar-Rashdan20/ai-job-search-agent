@@ -4,6 +4,11 @@ AI Job Search Agent is a CrewAI-powered application that helps job seekers find 
 
 The project is designed to prioritize fresh postings, valid job URLs, and transparent source handling. Job boards that are difficult or inappropriate to scrape, such as LinkedIn, Bayt, Indeed, and Glassdoor, are kept as search-only results.
 
+---
+# Demo :
+[Demo Link](https://www.linkedin.com/posts/omar-rashdan-64a475282_ai-machinelearning-crewai-ugcPost-7457141796293423104-gg8E?utm_source=share&utm_medium=member_desktop&rcm=ACoAAETErFoBium0uFL-HSaG10fR0-6OHAO8NXU)
+---
+
 ## Key Features
 
 - Generates targeted job-search queries from the user's role, location, skills, and preferred work mode.
